@@ -1,0 +1,177 @@
+---
+title: "Moderation analysis"
+author: "Qinyu Xiao"
+date: '`r format(Sys.time(), "%B %d, %Y")`'
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    theme: flatly
+    toc: true
+    toc_float: true
+    toc_depth: 5
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  dpi = 300,
+  fig.width = 7,
+  collapse = FALSE,
+  cache = FALSE,
+  comment = "",
+  strip.white = TRUE,
+  warning = FALSE, # Exclude warnings to improve readability
+  messages = FALSE,
+  fig.align = "center"
+)
+options(width = 140)
+```
+
+# Preparation
+
+```{r load packages, results='hide'}
+# Indicate required packages
+pkgs <- c(
+  "tidyverse",
+  "gvlma",
+  "stargazer",
+  "performance",
+  "interactions", # for plotting interactions
+  "ggstance"
+)
+
+# Find out which pacakges have not been installed
+new_pkgs <- pkgs[!(pkgs %in% installed.packages()[, "Package"])]
+
+# Install new packages
+if (length(new_pkgs)) install.packages(new_pkgs, dependencies = TRUE)
+
+# Load the packages
+lapply(pkgs, library, character.only = TRUE)
+```
+
+Moderation tests whether a variable ($Z$) affects the direction and/or strength of the relation between an independent variable ($X$) and a dependent variable ($Y$). In other words, moderation tests for interactions that affect **when** relationships between variables occur.
+
+Like mediation, moderation assumes that there is little to no measurement error in the moderator variable and that the DV did not cause the moderator. If the measurement error of the moderator is likely to be high, researchers should collect multiple indicators of the construct and use structural equation modeling to estimate latent variables.
+
+The safest ways to make sure that your moderator is not caused by your DV are to experimentally manipulate the variable or collect the measurement of your moderator before you introduce your IV.
+
+# Continuous moderator
+
+```{r simulate data}
+set.seed(2021)
+N <- 200
+X <- rnorm(N, 30, 12)
+Z <- rnorm(N, 40, 8)
+Y <- (-0.8 * X) * (0.3 * Z) + 10 * X + 10 + rnorm(N, 0, 70)
+dat <- data.frame(X, Z, Y)
+summary(dat)
+```
+
+Moderation can be tested by looking for significant interactions between the moderating variable ($Z$) and the IV ($X$). Notably, it is important to mean center both your moderator and your IV to reduce multicolinearity and make interpretation easier. Centering can be done using the scale function, which subtracts the mean of a variable from each value in that variable.
+
+A number of packages in R can also be used to conduct and plot moderation analyses, including the `moderate.lm` function of the `QuantPsyc` package and the `pequod` package. However, it is simple to do this *by hand* using traditional multiple regression, as shown here, and the underlying analysis (interacting the moderator and the IV) in these packages is identical to this approach.
+
+```{r moderation}
+# Centering
+dat$Xc <- scale(dat$X, center = TRUE, scale = FALSE)
+dat$Zc <- scale(dat$Z, center = TRUE, scale = FALSE)
+
+# Moderation by hand
+fit_mod <- lm(Y ~ Xc + Zc + Xc * Zc, data = dat)
+summary(fit_mod)
+```
+
+Obtain regression coefficients:
+
+```{r coefficients}
+coef(summary(fit_mod))
+```
+
+Model performance:
+
+```{r model performance}
+performance(fit_mod)
+```
+
+Check assumptions (if assumptions are not met data can be transformed):
+
+```{r model assumptions}
+gvlma(fit_mod)
+```
+
+```{r summary}
+stargazer(fit_mod, type = "text")
+```
+## Visualization
+
+The `interactions` R package is handy for visualizing moderation relationships.
+
+```{r plotting}
+interact_plot(
+  fit_mod,
+  pred = Xc,
+  modx = Zc,
+  plot.points = TRUE,
+  interval = TRUE,
+  int.width = .95
+  # Use `robust` argument to plot CI based on robust SE estimates
+)
+```
+
+## Simple slope analysis
+
+The next step is to conduct a **simple slope analysis**. This analysis unpacks the moderation and shows the effect of the IV on the DV at specified levels of the moderator.
+
+```{r basic simple slope analysis}
+ss <- sim_slopes(
+  model = fit_mod,
+  pred = Xc,
+  modx = Zc,
+  data = dat,
+  johnson_neyman = FALSE
+  # Use `cond.int` for conditional/simple intercepts 
+)
+ss
+```
+
+This can also be plotted:
+
+```{r plot simple slopes}
+plot(ss)
+```
+
+With the `huxtable` package, we can get publication-style table for `sim_slopes` output:
+
+```{r simple slopes table}
+library(huxtable)
+as_huxtable(ss)
+```
+
+## Johnson-Neyman intervals
+
+The Johnson-Neyman interval tells us all the values of the **moderator** for which the slope of the **predictor** will be statistically significant.
+
+```{r johnson neyman intervals}
+sim_slopes(
+  model = fit_mod,
+  pred = Xc,
+  modx = Zc,
+  johnson_neyman = TRUE
+  # Set `control.fdr` to TRUE if want to control for false discovery rate
+)
+```
+
+```{r johnson neyman plot}
+johnson_neyman(
+  fit_mod,
+  pred = Xc,
+  modx = Zc,
+  alpha = .05
+)
+```
+
+All the above can be done with one function from the [`interactions`](https://cran.r-project.org/web/packages/interactions/vignettes/interactions.html) package: the `probe_interaction` function.
+
+# Discrete moderator

@@ -1,0 +1,209 @@
+---
+title: "Mediation analysis"
+author: "Qinyu Xiao"
+date: '`r format(Sys.time(), "%B %d, %Y")`'
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    theme: flatly
+    toc: true
+    toc_float: true
+    toc_depth: 5
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  dpi = 300,
+  fig.width = 7,
+  collapse = FALSE,
+  cache = FALSE,
+  comment = "",
+  strip.white = TRUE,
+  warning = FALSE, # Exclude warnings to improve readability
+  messages = FALSE,
+  fig.align = "center"
+)
+options(width = 140)
+```
+
+# Preparation
+
+```{r load packages, results='hide'}
+# Indicate required packages
+pkgs <- c(
+  "tidyverse",  # Data wrangling
+  "mediation",  # For mediation analysis
+  "multilevel", # Sober test
+  "bda",        # Another option for Sober test
+  "gvlma",      # Testing model assumptions
+  "stargazer",  # Handy regression tables
+  "lavaan"      # SEM approach for mediation
+)
+
+# Find out which packages have not been installed
+new_pkgs <- pkgs[!(pkgs %in% installed.packages()[, "Package"])]
+
+# Install new packages
+if (length(new_pkgs)) install.packages(new_pkgs, dependencies = TRUE)
+
+# Load the packages
+lapply(pkgs, library, character.only = TRUE)
+```
+
+Mediation analysis tests a hypothetical causal chain where one variable $X$ affects a second variable $M$ and, in turn, that variable affects a third variable $Y$. Mediators describe the how or why of a (typically well-established) relationship between two other variables and are sometimes called intermediary variables since they often describe the process through which an effect occurs. This is also sometimes called an **indirect effect**. For instance, people with higher incomes tend to live longer but this effect is explained by the mediating influence of having access to better health care.
+
+In R, mediation analysis may be conducted in the following ways:
+
+- [Baron and Kenny's (1986)](https://doi.org/10.1037/0022-3514.51.6.1173) four-step indirect effect method. The Baron-and-Kelly method is one of the earliest methods for testing mediation but it tends to have low statistical power. It is covered here because it provides a very clear approach to establishing relationships between variables and is still occasionally requested by reviewers.
+- `mediation` package ([Tingley et al., 2014](https://doi.org/10.18637/jss.v059.i05)). The `mediation` package method is highly recommended as a flexible and statistically powerful approach.
+- Structural modeling approach. This is the best method when we have measurement errors.
+
+# Analysis
+
+Before mediation analysis, it is necessary to make sure that:
+
+- The DV does not cause the mediator.
+- There's little-to-no measurement error in the mediator (else we need to use SEM).
+
+Generate some random data:
+
+```{r simulate data}
+set.seed(123)
+N <- 300
+X <- rnorm(N, 175, 7)
+M <- 0.7 * X + rnorm(N, 0, 5)
+Y <- 0.4 * M + rnorm(N, 0, 5)
+dat <- data.frame(X, M, Y)
+```
+
+## Baron and Kenny
+
+Four steps:
+
+1. The effect of X on Y should be significant (i.e., path `c` must be significantly different from 0).
+2. The effect of X on M should be significant (i.e., path `a` must be significantly different from 0).
+3. The effect of M on Y controlling for X should be significant (i.e., path `b` must be significantly different from 0).
+4. The effect of Y on X controlling for M should be non-significant or close to 0 (i.e., reversed path `c` should be close to 0). In other words, the DV should not predict the IV after controlling for the mediator ([ref](https://ademos.people.uic.edu/Chapter14.html)). (I don't quite understand why we need to regress the IV on the DV)
+
+```{r total effect}
+fit <- lm(Y ~ X, data = dat)
+summary(fit)
+```
+
+```{r path a}
+fit_a <- lm(M ~ X, data = dat)
+summary(fit_a)
+```
+
+```{r path b}
+fit_b <- lm(Y ~ M + X, data = dat)
+summary(fit_b)
+```
+
+```{r path c reversed}
+fit_c_reversed <- lm(X ~ Y + M, data = dat)
+summary(fit_c_reversed)
+```
+
+Now that our models suggest there is indeed a mediation, but these procedures do not allow for a formal test of the indirect effect, so we don't know if the mediation is truly meaningful. We can use the Sober test or bootstrapping to test the significance of the indirect effect.
+
+The **Sober test** uses a specialized *t*-test to determine if there is a significant reduction in the effect of X on Y when M is present in the model.
+
+For the Sober test:
+
+```{r sober test}
+options(digits = 4)
+multilevel::sobel(dat$X, dat$M, dat$Y)
+```
+
+Then we can get the *p*-value for the *z*-value. Note that here the indirect effect is the product of two unstandardized coefficients.
+
+Alternatively, use the `bda` package:
+
+```{r sober test with bda package}
+bda::mediation.test(dat$M, dat$X, dat$Y)
+```
+
+In this case, we can confirm that there's a significant mediation, $z = 3.84$, $p < .001$.
+
+However, the Sober test is largely considered an outdated method since it assumes that the indirect effect is normally distributed, and it tends to only have adequate power with large sample sizes. It is therefore highly recommended to use the `mediation` bootstrapping method instead.
+
+## Mediation R package
+
+The `mediation` package uses the most recent bootstrapping method by [Preacher and Hayes (2004)](https://doi.org/10.3758/BF03206553) to address the power limitation of the Sober test. This method computes the point estimate of the indirect effect over a large number of random samples (typically 1,000). Therefore it does not assume that the data are normally distributed and is especially more suitable for small sample sizes than the Baron-and-Kenny method.
+
+```{r mediation models}
+fitM <- lm(M ~ X, data = dat)
+fitY <- lm(Y ~ X + M, data = dat)
+# Check whether model assumptions are met
+gvlma(fitM) # Make use of square root/log transform to deal with skewness
+gvlma(fitY)
+```
+
+Next, fit the mediation model:
+
+```{r fit mediation model}
+# Obtaining quasi-Bayesian confidence intervals
+fit_med <- mediation::mediate(
+  model.m = fitM,
+  model.y = fitY,
+  treat = "X",
+  mediator = "M"
+)
+summary(fit_med)
+plot(fit_med)
+
+# Alternatively, use bootstrapping
+fit_med_boot <- mediation::mediate(
+  model.m = fitM,
+  model.y = fitY,
+  boot = TRUE,
+  sims = 999,
+  treat = "X",
+  mediator = "M"
+)
+summary(fit_med_boot)
+plot(fit_med_boot)
+```
+
+- `ACME`: average causal mediation effects (of our interest)
+- `ADE`: average direct effects
+- `Total Effect`: combined indirect and direct effects
+- `Prop. Mediated`: ratio of the above estimates
+
+See [here](https://towardsdatascience.com/doing-and-reporting-your-first-mediation-analysis-in-r-2fe423b92171) for more details.
+
+## Structural equation modeling
+
+```{r sem for mediation}
+mediation_equations <- '
+Y ~ cprime * X + b * M
+M ~ a * X
+ab := a * b
+c := cprime + a * b
+proportion.mediated := (c - cprime) / c
+'
+
+mediation_model <- sem(model = mediation_equations, data = dat)
+summary(mediation_model)
+```
+
+```{r estimate standard error and add CI}
+set.seed(123)
+medmodel_boot_se <- sem(
+  mediation_model,
+  data = dat,
+  se = "bootstrap",
+  bootstrap = 5000
+)
+parameterestimates(
+  medmodel_boot_se,
+  standardized = TRUE,
+  se = TRUE,
+  ci = TRUE,
+  zstat = TRUE,
+  pvalue = TRUE
+)
+```
